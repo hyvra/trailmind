@@ -3,13 +3,49 @@
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --color-trail: #2d5016;
-  --color-trail-light: #4a7c28;
-  --color-earth: #8B6914;
+
+  /* v2 Outdoor Palette */
+  --color-primary: #2D5016;
+  --color-primary-light: #3D6B20;
+  --color-accent: #D4841A;
+  --color-accent-light: #E09A3A;
+  --color-bg: #FAF8F5;
+  --color-surface: #FFFFFF;
+  --color-text: #1C2B1A;
+  --color-text-secondary: #6B7B6A;
+  --color-border: rgba(0, 0, 0, 0.06);
+  --color-border-strong: rgba(0, 0, 0, 0.12);
+  --color-danger: #CC3333;
   --color-water: #1a6b8a;
-  --color-ridge: #5c4033;
+
+  /* Legacy aliases */
+  --color-trail: #2D5016;
+  --color-trail-light: #3D6B20;
 }
 
 body {
-  @apply bg-zinc-50 text-zinc-900 font-sans;
+  @apply font-sans;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* Map controls styling */
+.leaflet-control-layers {
+  border-radius: 12px !important;
+  border: 1px solid var(--color-border) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08) !important;
+}
+
+/* Compact left panel scrolling */
+.plan-sidebar {
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.plan-sidebar::-webkit-scrollbar {
+  width: 4px;
+}
+.plan-sidebar::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.15);
+  border-radius: 4px;
 }
