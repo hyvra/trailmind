@@ -1,0 +1,7 @@
+{
+  "name": "TrailMind",
+  "description": "AI-powered cycling assistant that creates personalized daily ride plans based on your body, bike, and preferences.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
