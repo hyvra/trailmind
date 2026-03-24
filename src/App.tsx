@@ -5,6 +5,7 @@ import {
   Marker,
   Popup,
   Polyline,
+  CircleMarker,
   useMapEvents,
   useMap,
   LayersControl
@@ -37,7 +38,13 @@ import {
   ChevronUp,
   MapPin,
   Layers,
-  Navigation
+  Navigation,
+  Play,
+  Pause,
+  Square,
+  Anchor,
+  Waves,
+  Clock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -46,6 +53,7 @@ import { UserProfile, SavedLocation, RideHistory, RouteOption } from './types';
 import { generateRoutes } from './services/routeGenerator';
 import { searchLocations, geocodeLocation, reverseGeocode, type GeocodingResult } from './services/geocoding';
 import { getFishingConditions, type FishingConditions } from './services/fishingData';
+import { getNearbyFishingSpots, type FishingSpot } from './services/fishingSpots';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -162,9 +170,20 @@ export default function App() {
   // Saved spots panel
   const [spotsExpanded, setSpotsExpanded] = useState(false);
 
-  // Fishing conditions state
+  // Fishing conditions + spots state
   const [fishingConditions, setFishingConditions] = useState<FishingConditions | null>(null);
   const [loadingFishing, setLoadingFishing] = useState(false);
+  const [fishingSpots, setFishingSpots] = useState<FishingSpot[]>([]);
+
+  // Live ride tracking state (Strava-like)
+  const [isRiding, setIsRiding] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [rideTrack, setRideTrack] = useState<[number, number][]>([]);
+  const [livePosition, setLivePosition] = useState<[number, number] | null>(null);
+  const [rideStartTime, setRideStartTime] = useState<number>(0);
+  const [rideElapsed, setRideElapsed] = useState(0);
+  const [rideDistance, setRideDistance] = useState(0);
+  const watchIdRef = useRef<number | null>(null);
 
   // Post-ride feedback state
   const [feedbackText, setFeedbackText] = useState('');
@@ -213,15 +232,41 @@ export default function App() {
     }
   }, []);
 
-  // Fetch fishing conditions when Fishing Access is selected
+  // Fetch fishing conditions + spots when Fishing Access is selected
   useEffect(() => {
-    if (!selectedChips.includes('Fishing Access')) { setFishingConditions(null); return; }
+    if (!selectedChips.includes('Fishing Access')) {
+      setFishingConditions(null);
+      setFishingSpots([]);
+      return;
+    }
     setLoadingFishing(true);
-    getFishingConditions(mapCenter[0], mapCenter[1])
-      .then(setFishingConditions)
-      .catch(() => setFishingConditions(null))
-      .finally(() => setLoadingFishing(false));
+    Promise.all([
+      getFishingConditions(mapCenter[0], mapCenter[1]),
+      getNearbyFishingSpots(mapCenter[0], mapCenter[1])
+    ]).then(([conditions, spots]) => {
+      setFishingConditions(conditions);
+      setFishingSpots(spots);
+    }).catch(() => {
+      setFishingConditions(null);
+      setFishingSpots([]);
+    }).finally(() => setLoadingFishing(false));
   }, [selectedChips.includes('Fishing Access'), mapCenter[0], mapCenter[1]]);
+
+  // Live ride tracking timer
+  useEffect(() => {
+    if (!isRiding || isPaused) return;
+    const timer = setInterval(() => {
+      setRideElapsed(Math.floor((Date.now() - rideStartTime) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isRiding, isPaused, rideStartTime]);
+
+  // Cleanup GPS watch on unmount
+  useEffect(() => {
+    return () => {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+    };
+  }, []);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -373,6 +418,124 @@ export default function App() {
     setLocationInput('');
     setRouteOptions([]);
     setSelectedRoute(null);
+  };
+
+  // --- Ride tracking (Strava-like) ---
+  const haversineDistance = (p1: [number, number], p2: [number, number]) => {
+    const R = 3958.8; // miles
+    const dLat = (p2[0] - p1[0]) * Math.PI / 180;
+    const dLng = (p2[1] - p1[1]) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(p1[0] * Math.PI / 180) * Math.cos(p2[0] * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  const startRide = () => {
+    if (!('geolocation' in navigator)) {
+      setToast({ message: 'GPS not available', type: 'error' });
+      return;
+    }
+    setIsRiding(true);
+    setIsPaused(false);
+    setRideTrack([]);
+    setRideDistance(0);
+    setRideStartTime(Date.now());
+    setRideElapsed(0);
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const point: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setLivePosition(point);
+        setMapCenter(point);
+        setRideTrack(prev => {
+          if (prev.length > 0) {
+            const dist = haversineDistance(prev[prev.length - 1], point);
+            if (dist > 0.005) { // > ~26ft to filter GPS jitter
+              setRideDistance(d => d + dist);
+              return [...prev, point];
+            }
+            return prev;
+          }
+          return [point];
+        });
+      },
+      (err) => {
+        console.error('GPS error', err);
+        setToast({ message: 'GPS signal lost', type: 'error' });
+      },
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+    );
+  };
+
+  const pauseRide = () => {
+    setIsPaused(true);
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+  };
+
+  const resumeRide = () => {
+    setIsPaused(false);
+    setRideStartTime(Date.now() - rideElapsed * 1000);
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const point: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setLivePosition(point);
+        setMapCenter(point);
+        setRideTrack(prev => {
+          if (prev.length > 0) {
+            const dist = haversineDistance(prev[prev.length - 1], point);
+            if (dist > 0.005) {
+              setRideDistance(d => d + dist);
+              return [...prev, point];
+            }
+            return prev;
+          }
+          return [point];
+        });
+      },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+    );
+  };
+
+  const stopRide = () => {
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    setIsRiding(false);
+    setIsPaused(false);
+    setLivePosition(null);
+
+    // Save to history
+    if (rideTrack.length > 1) {
+      const newRide: RideHistory = {
+        id: Math.random().toString(36).substr(2, 9),
+        date: new Date().toISOString(),
+        route: rideTrack,
+        distance: Math.round(rideDistance * 10) / 10,
+        elevation: parseFloat(selectedRoute?.elevation || '0'),
+        feedback: `Tracked ride - ${formatDuration(rideElapsed)}`,
+        rating: undefined
+      };
+      const updated = [newRide, ...rides];
+      setRides(updated);
+      localStorage.setItem('trailmind_rides', JSON.stringify(updated));
+      setToast({ message: `Ride saved! ${rideDistance.toFixed(1)} mi`, type: 'success' });
+      setActiveTab('history');
+    }
+    setRideTrack([]);
+    setRideDistance(0);
+    setRideElapsed(0);
+  };
+
+  const formatDuration = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
   const useSpotAsLocation = (loc: SavedLocation) => {
@@ -797,24 +960,55 @@ export default function App() {
             zoomControl={false}
           >
             <LayersControl position="topright">
-              <LayersControl.BaseLayer name="Cycling" checked>
+              <LayersControl.BaseLayer name="Outdoor" checked>
                 <TileLayer
-                  url="https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png"
-                  attribution='<a href="https://www.cyclosm.org">CyclOSM</a>'
+                  url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
+                  attribution="Esri, HERE, Garmin"
                 />
               </LayersControl.BaseLayer>
-              <LayersControl.BaseLayer name="Standard">
-                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-              </LayersControl.BaseLayer>
-              <LayersControl.BaseLayer name="Terrain">
-                <TileLayer url="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png" />
+              <LayersControl.BaseLayer name="Cycling">
+                <TileLayer url="https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png" />
               </LayersControl.BaseLayer>
               <LayersControl.BaseLayer name="Satellite">
                 <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
               </LayersControl.BaseLayer>
+              <LayersControl.BaseLayer name="Terrain">
+                <TileLayer url="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png" />
+              </LayersControl.BaseLayer>
             </LayersControl>
             <MapCenterUpdater center={mapCenter} />
             <MapEvents />
+
+            {/* Fishing spot markers — from USFWS, OSM, USGS */}
+            {fishingSpots.map(spot => (
+              <CircleMarker
+                key={spot.id}
+                center={[spot.lat, spot.lng]}
+                radius={6}
+                pathOptions={{
+                  color: spot.type === 'boat_ramp' ? '#D4841A' : spot.type === 'fishing_access' ? '#2D5016' : '#1a6b8a',
+                  fillColor: spot.type === 'boat_ramp' ? '#D4841A' : spot.type === 'fishing_access' ? '#2D5016' : '#1a6b8a',
+                  fillOpacity: 0.8,
+                  weight: 2,
+                }}
+              >
+                <Popup>
+                  <div className="p-1.5 min-w-[120px]">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      {spot.type === 'boat_ramp' && <Anchor className="w-3 h-3 text-amber-600" />}
+                      {spot.type === 'fishing_access' && <Fish className="w-3 h-3 text-green-700" />}
+                      {spot.type === 'water_feature' && <Waves className="w-3 h-3 text-blue-600" />}
+                      <h5 className="font-bold text-xs">{spot.name}</h5>
+                    </div>
+                    <p className="text-[10px] text-zinc-500">{spot.description}</p>
+                    <button
+                      onClick={() => { setLocationInput(spot.name); setMapCenter([spot.lat, spot.lng]); }}
+                      className="mt-1 text-[10px] text-amber-600 font-medium hover:underline"
+                    >Use as ride location</button>
+                  </div>
+                </Popup>
+              </CircleMarker>
+            ))}
 
             {/* Saved spot markers — accent colored */}
             {locations.map(loc => (
@@ -957,17 +1151,67 @@ export default function App() {
             <ArrowRight className="w-4 h-4 rotate-180" /> Back to Options
           </Button>
           <h2 className="text-xl font-bold text-text">{selectedRoute.name}</h2>
-          <Button variant="accent" onClick={() => {}}>Start Ride</Button>
+          {!isRiding ? (
+            <Button variant="accent" onClick={startRide}>
+              <Play className="w-4 h-4" /> Start Ride
+            </Button>
+          ) : (
+            <div className="flex gap-2">
+              {isPaused ? (
+                <Button variant="accent" onClick={resumeRide}><Play className="w-4 h-4" /> Resume</Button>
+              ) : (
+                <Button variant="secondary" onClick={pauseRide}><Pause className="w-4 h-4" /> Pause</Button>
+              )}
+              <Button variant="danger" onClick={stopRide}><Square className="w-3.5 h-3.5" /> Stop</Button>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 h-[400px] rounded-2xl overflow-hidden border border-[var(--color-border-strong)] shadow-sm">
+          <div className="lg:col-span-2 h-[400px] rounded-2xl overflow-hidden border border-[var(--color-border-strong)] shadow-sm relative">
             <MapContainer center={selectedRoute.coordinates[0]} zoom={14} className="h-full w-full">
-              <TileLayer url="https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png" />
+              <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" />
               <Polyline positions={selectedRoute.coordinates} color="#D4841A" weight={4} />
               <Marker position={selectedRoute.coordinates[0]} />
               <Marker position={selectedRoute.coordinates[selectedRoute.coordinates.length - 1]} />
+              {/* Live position marker */}
+              {livePosition && (
+                <>
+                  <CircleMarker center={livePosition} radius={8} pathOptions={{ color: '#D4841A', fillColor: '#D4841A', fillOpacity: 1, weight: 3 }} />
+                  <CircleMarker center={livePosition} radius={16} pathOptions={{ color: '#D4841A', fillColor: '#D4841A', fillOpacity: 0.15, weight: 1 }} />
+                </>
+              )}
+              {/* Live tracked route */}
+              {rideTrack.length > 1 && (
+                <Polyline positions={rideTrack} color="#CC3333" weight={4} opacity={0.9} dashArray="8,6" />
+              )}
+              {livePosition && <MapCenterUpdater center={livePosition} />}
             </MapContainer>
+
+            {/* Live tracking HUD — Strava-style overlay */}
+            {isRiding && (
+              <div className="absolute bottom-4 left-4 right-4 z-[1000] bg-text/90 backdrop-blur text-white rounded-xl p-4 shadow-2xl">
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <p className="text-2xl font-bold tabular-nums">{formatDuration(rideElapsed)}</p>
+                    <p className="text-[10px] uppercase tracking-wider opacity-60">Time</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold tabular-nums">{rideDistance.toFixed(1)}</p>
+                    <p className="text-[10px] uppercase tracking-wider opacity-60">Miles</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold tabular-nums">
+                      {rideElapsed > 0 ? ((rideDistance / (rideElapsed / 3600)).toFixed(1)) : '0.0'}
+                    </p>
+                    <p className="text-[10px] uppercase tracking-wider opacity-60">mph</p>
+                  </div>
+                </div>
+                {isPaused && (
+                  <p className="text-center text-xs text-accent font-medium mt-2 animate-pulse">Paused</p>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="space-y-4">
