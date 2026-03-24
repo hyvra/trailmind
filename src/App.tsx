@@ -45,6 +45,7 @@ import { twMerge } from 'tailwind-merge';
 import { UserProfile, SavedLocation, RideHistory, RouteOption } from './types';
 import { generateRoutes } from './services/routeGenerator';
 import { searchLocations, geocodeLocation, reverseGeocode, type GeocodingResult } from './services/geocoding';
+import { getFishingConditions, type FishingConditions } from './services/fishingData';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -161,6 +162,10 @@ export default function App() {
   // Saved spots panel
   const [spotsExpanded, setSpotsExpanded] = useState(false);
 
+  // Fishing conditions state
+  const [fishingConditions, setFishingConditions] = useState<FishingConditions | null>(null);
+  const [loadingFishing, setLoadingFishing] = useState(false);
+
   // Post-ride feedback state
   const [feedbackText, setFeedbackText] = useState('');
   const [feedbackRating, setFeedbackRating] = useState(0);
@@ -207,6 +212,16 @@ export default function App() {
       );
     }
   }, []);
+
+  // Fetch fishing conditions when Fishing Access is selected
+  useEffect(() => {
+    if (!selectedChips.includes('Fishing Access')) { setFishingConditions(null); return; }
+    setLoadingFishing(true);
+    getFishingConditions(mapCenter[0], mapCenter[1])
+      .then(setFishingConditions)
+      .catch(() => setFishingConditions(null))
+      .finally(() => setLoadingFishing(false));
+  }, [selectedChips.includes('Fishing Access'), mapCenter[0], mapCenter[1]]);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -439,6 +454,78 @@ export default function App() {
                 ))}
               </div>
             </div>
+
+            {/* Fishing conditions strip — Fishbrain-inspired */}
+            <AnimatePresence>
+              {selectedChips.includes('Fishing Access') && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="bg-water/5 border border-water/20 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-water flex items-center gap-1.5">
+                        <Fish className="w-3.5 h-3.5" /> Fishing Conditions
+                      </span>
+                      {fishingConditions && (
+                        <span className={cn(
+                          "text-[10px] font-bold uppercase px-2 py-0.5 rounded-full",
+                          fishingConditions.biteRating === 'excellent' ? "bg-green-100 text-green-700" :
+                          fishingConditions.biteRating === 'good' ? "bg-yellow-100 text-yellow-700" :
+                          "bg-zinc-100 text-zinc-600"
+                        )}>
+                          {fishingConditions.biteRating} bite
+                        </span>
+                      )}
+                    </div>
+                    {loadingFishing ? (
+                      <div className="h-12 bg-water/10 rounded-lg animate-pulse" />
+                    ) : fishingConditions ? (
+                      <>
+                        {/* Conditions at a glance — horizontal strip */}
+                        <div className="flex gap-3 text-[10px]">
+                          {fishingConditions.waterTemp && (
+                            <div className="text-center">
+                              <p className="font-bold text-text">{fishingConditions.waterTemp}</p>
+                              <p className="text-text-secondary">Water</p>
+                            </div>
+                          )}
+                          {fishingConditions.flowRate && (
+                            <div className="text-center">
+                              <p className="font-bold text-text">{fishingConditions.flowRate}</p>
+                              <p className="text-text-secondary">Flow</p>
+                            </div>
+                          )}
+                          <div className="text-center">
+                            <p className="font-bold text-text">{fishingConditions.moonPhase}</p>
+                            <p className="text-text-secondary">Moon</p>
+                          </div>
+                        </div>
+                        {/* Species + bait */}
+                        <div className="text-[10px] text-text-secondary">
+                          <span className="font-semibold text-text">Species: </span>
+                          {fishingConditions.species.join(', ')}
+                        </div>
+                        <div className="text-[10px] text-text-secondary">
+                          <span className="font-semibold text-text">Best bait: </span>
+                          {fishingConditions.bestBait.slice(0, 4).join(', ')}
+                        </div>
+                        {/* Solunar feeding times */}
+                        <div className="text-[10px] text-text-secondary space-y-0.5">
+                          {fishingConditions.solunarPeriods.slice(0, 2).map((p, i) => (
+                            <p key={i}>{p}</p>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-[10px] text-text-secondary">No water data available for this area</p>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Vibe textarea */}
             <div>
