@@ -3,6 +3,11 @@
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-trail: #2d5016;
+  --color-trail-light: #4a7c28;
+  --color-earth: #8B6914;
+  --color-water: #1a6b8a;
+  --color-ridge: #5c4033;
 }
 
 body {
